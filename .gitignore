@@ -1,0 +1,12 @@
+# Azure CLI authentication state and tenant-separated configuration directories
+.azure/
+.azure-tenants/
+azure-tenants/
+
+# User-local tenant mappings
+config/tenants.bash
+tenants.local.bash
+.azure-tenant-switcher/
+
+# Test and editor artifacts
+.DS_Store

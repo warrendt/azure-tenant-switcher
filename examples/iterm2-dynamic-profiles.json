@@ -1,0 +1,19 @@
+{
+  "Profiles": [
+    {
+      "Name": "Contoso Engineering",
+      "Badge Text": "Contoso Engineering",
+      "Initial Text": "azt contoso\n"
+    },
+    {
+      "Name": "Fabrikam Research",
+      "Badge Text": "Fabrikam Research",
+      "Initial Text": "azt fabrikam\n"
+    },
+    {
+      "Name": "Northwind Retail",
+      "Badge Text": "Northwind Retail",
+      "Initial Text": "azt northwind\n"
+    }
+  ]
+}
