@@ -7,6 +7,9 @@ azure-tenants/
 config/tenants.bash
 tenants.local.bash
 .azure-tenant-switcher/
+tenants.conf
+azure-tenant-switcher.local.conf
+config/tenants.conf
 
 # Test and editor artifacts
 .DS_Store

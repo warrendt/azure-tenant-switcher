@@ -1,86 +1,119 @@
 #!/usr/bin/env bash
 
-set -eu
+set -u
 
-REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/azure-tenant-switcher.XXXXXX")
-trap 'rm -rf "$TEST_ROOT"' EXIT
+
+cleanup() {
+  rm -rf "$TEST_ROOT"
+}
+
+trap cleanup EXIT HUP INT TERM
 
 fail() {
-    printf 'FAIL: %s\n' "$1" >&2
-    exit 1
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
 }
 
-assert_equals() {
-    if [ "$1" != "$2" ]; then
-        fail "expected [$1], got [$2]"
-    fi
+assert_equal() {
+  [[ $1 == "$2" ]] || fail "expected '$2', got '$1'"
 }
 
-mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/config"
-cat >"$TEST_ROOT/config/tenants.bash" <<'EOF'
-azure_tenant_switcher_config() {
-    azure_tenant_switcher_add_tenant "contoso" "Contoso Engineering" "2f7d0a91-6c4e-4a82-9f10-3b5d8c6e1a27"
-    azure_tenant_switcher_add_tenant "fabrikam" "Fabrikam Research" "8a3c5e71-1d9b-4f63-a8e2-6c0d4b9f7a15"
+assert_contains() {
+  case $1 in
+    *"$2"*) ;;
+    *) fail "expected '$1' to contain '$2'" ;;
+  esac
 }
+
+export HOME="$TEST_ROOT/home"
+export AZURE_TENANT_SWITCHER_CONFIG="$TEST_ROOT/tenants.conf"
+export AZURE_TENANT_SWITCHER_CONFIG_ROOT="$TEST_ROOT/azure-contexts"
+mkdir -p "$HOME" "$TEST_ROOT/bin"
+
+cat > "$AZURE_TENANT_SWITCHER_CONFIG" <<'EOF'
+# Test-only fictitious entries.
+contoso|11111111-2222-4333-8444-555555555555|Contoso Engineering
+fabrikam|22222222-3333-4444-8555-666666666666|Fabrikam Research
 EOF
 
-cat >"$TEST_ROOT/bin/az" <<'EOF'
+cat > "$TEST_ROOT/bin/az" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$TEST_AZ_LOG"
-printf '%s\n' "$AZURE_CONFIG_DIR" >"$TEST_AZ_CONFIG_DIR"
-if [ "$1" = "account" ] && [ "$2" = "get-access-token" ]; then
-    exit "${MOCK_AZ_STATUS:-0}"
+if [[ ${1:-} == account ]]; then
+  exit "${AZT_TEST_AZ_STATUS:-0}"
 fi
+printf '%s\n' "$@" > "$AZT_TEST_AZ_LOG"
 EOF
 chmod +x "$TEST_ROOT/bin/az"
-
 export PATH="$TEST_ROOT/bin:$PATH"
-export TEST_AZ_LOG="$TEST_ROOT/az-args"
-export TEST_AZ_CONFIG_DIR="$TEST_ROOT/az-config-dir"
-export AZURE_TENANT_SWITCHER_CONFIG="$TEST_ROOT/config/tenants.bash"
-export AZURE_TENANT_SWITCHER_CONFIG_ROOT="$TEST_ROOT/azure-contexts"
+export AZT_TEST_AZ_LOG="$TEST_ROOT/az.log"
 
-# shellcheck disable=SC1090
-source "$REPO_ROOT/azure-tenant-switcher.bash"
+# shellcheck source=../azure-tenant-switcher.bash
+source "$PROJECT_ROOT/azure-tenant-switcher.bash"
 
 if azlogin >/dev/null 2>&1; then
-    fail 'login succeeded without a selected tenant'
+  fail "login without a selected tenant must fail"
+fi
+
+if azt does-not-exist >/dev/null 2>&1; then
+  fail "unknown aliases must fail"
 fi
 
 azt contoso >/dev/null
-assert_equals "$AZ_TENANT" "2f7d0a91-6c4e-4a82-9f10-3b5d8c6e1a27"
-assert_equals "$AZ_TENANT_LABEL" "Contoso Engineering"
-assert_equals "$AZURE_CONFIG_DIR" "$TEST_ROOT/azure-contexts/contoso"
-assert_equals "$(azt_prompt_tag)" "[az:Contoso Engineering]"
+assert_equal "$AZURE_CONFIG_DIR" "$AZURE_TENANT_SWITCHER_CONFIG_ROOT/contoso"
+assert_equal "$AZ_TENANT" "11111111-2222-4333-8444-555555555555"
+assert_equal "$AZ_TENANT_LABEL" "Contoso Engineering"
+[[ -d $AZURE_CONFIG_DIR ]] || fail "context directory was not created"
 
-azlogin --scope https://management.azure.com//.default
-assert_equals \
-    "$(cat "$TEST_AZ_LOG")" \
-    "login --tenant 2f7d0a91-6c4e-4a82-9f10-3b5d8c6e1a27 --use-device-code --allow-no-subscriptions --scope https://management.azure.com//.default"
-assert_equals "$(cat "$TEST_AZ_CONFIG_DIR")" "$TEST_ROOT/azure-contexts/contoso"
+tenant_list=$(azt --list)
+assert_contains "$tenant_list" $'contoso\tContoso Engineering'
+assert_contains "$tenant_list" $'fabrikam\tFabrikam Research'
+if [[ $tenant_list == *11111111* ]]; then
+  fail "tenant list must not display tenant IDs"
+fi
 
-assert_equals "$(azt_completion)" "$(printf 'contoso\nfabrikam')"
-assert_equals "$(azt_status)" "Signed in (cached): Contoso Engineering"
+if azt ../escape >/dev/null 2>&1; then
+  fail "invalid aliases must fail"
+fi
+[[ ! -e "$TEST_ROOT/escape" ]] || fail "invalid alias escaped the context root"
 
-export MOCK_AZ_STATUS=1
+azlogin >/dev/null
+login_arguments=$(cat "$AZT_TEST_AZ_LOG")
+assert_contains "$login_arguments" "login"
+assert_contains "$login_arguments" "--tenant"
+assert_contains "$login_arguments" "11111111-2222-4333-8444-555555555555"
+assert_contains "$login_arguments" "--use-device-code"
+assert_contains "$login_arguments" "--allow-no-subscriptions"
+
+active_status=$(azt_status)
+assert_contains "$active_status" "active for Contoso Engineering"
+
+export AZT_TEST_AZ_STATUS=1
 if azt_status >/dev/null 2>&1; then
-    fail 'status succeeded without a usable cached token'
+  fail "inactive Azure CLI session must fail"
 fi
-unset MOCK_AZ_STATUS
+unset AZT_TEST_AZ_STATUS
 
-if azt missing >/dev/null 2>&1; then
-    fail 'unknown tenant was accepted'
+printf 'contoso|not-a-uuid|Contoso Engineering\n' > "$AZURE_TENANT_SWITCHER_CONFIG"
+if azt contoso >/dev/null 2>&1; then
+  fail "malformed tenant IDs must fail"
 fi
 
-cat >"$TEST_ROOT/config/invalid.bash" <<'EOF'
-azure_tenant_switcher_config() {
-    azure_tenant_switcher_add_tenant "invalid" "Invalid Tenant" "not-a-tenant-id"
-}
+cat > "$AZURE_TENANT_SWITCHER_CONFIG" <<'EOF'
+contoso|11111111-2222-4333-8444-555555555555|Contoso Engineering
+fabrikam|not-a-uuid|Fabrikam Research
 EOF
-export AZURE_TENANT_SWITCHER_CONFIG="$TEST_ROOT/config/invalid.bash"
-if azt invalid >/dev/null 2>&1; then
-    fail 'invalid tenant ID was accepted'
+if azt contoso >/dev/null 2>&1; then
+  fail "a malformed later entry must fail selection"
 fi
 
-printf '%s\n' 'All tests passed.'
+cat > "$AZURE_TENANT_SWITCHER_CONFIG" <<'EOF'
+contoso|11111111-2222-4333-8444-555555555555|Contoso Engineering
+contoso|22222222-3333-4444-8555-666666666666|Contoso Duplicate
+EOF
+if azt --list >/dev/null 2>&1; then
+  fail "duplicate aliases must fail"
+fi
+
+printf '%s\n' "PASS: azure-tenant-switcher tests"

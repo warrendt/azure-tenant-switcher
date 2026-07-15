@@ -1,0 +1,14 @@
+# Azure Tenant Switcher mappings
+#
+# Format: alias|tenant-id|display label
+# - alias: letters, numbers, underscores, and hyphens; it must begin with a
+#   letter or number.
+# - tenant-id: Azure Entra tenant UUID.
+# - display label: a non-empty printable label shown in shell output and the
+#   optional prompt tag.
+#
+# Copy this file to the user-local path documented in README.md before adding
+# real tenant IDs. Do not commit that local copy.
+contoso|11111111-2222-4333-8444-555555555555|Contoso Engineering
+fabrikam|22222222-3333-4444-8555-666666666666|Fabrikam Research
+northwind|33333333-4444-4555-8666-777777777777|Northwind Retail

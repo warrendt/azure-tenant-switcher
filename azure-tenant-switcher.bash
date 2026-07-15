@@ -1,203 +1,239 @@
-#!/usr/bin/env bash
-# Source this file from Bash to switch Azure CLI configuration directories by tenant.
+# Azure Tenant Switcher
+#
+# Source this file from an interactive Bash session. Tenant mappings are read
+# from a plain-text, user-local configuration file; this script never stores
+# Azure CLI credentials or tokens itself.
 
-if [ -z "${BASH_VERSION:-}" ]; then
-    printf '%s\n' 'azure-tenant-switcher requires Bash.' >&2
-    return 1 2>/dev/null || exit 1
-fi
+: "${AZURE_TENANT_SWITCHER_CONFIG:=${XDG_CONFIG_HOME:-$HOME/.config}/azure-tenant-switcher/tenants.conf}"
+: "${AZURE_TENANT_SWITCHER_CONFIG_ROOT:=$HOME/.azure-tenants}"
 
-AZURE_TENANT_SWITCHER_SLUGS=()
-AZURE_TENANT_SWITCHER_LABELS=()
-AZURE_TENANT_SWITCHER_IDS=()
-
-_azt_config_path() {
-    if [ -n "${AZURE_TENANT_SWITCHER_CONFIG:-}" ]; then
-        printf '%s\n' "$AZURE_TENANT_SWITCHER_CONFIG"
-    else
-        printf '%s\n' "$HOME/.config/azure-tenant-switcher/tenants.bash"
-    fi
+_azt_error() {
+  printf 'azure-tenant-switcher: %s\n' "$*" >&2
 }
 
-_azt_valid_slug() {
-    [[ "$1" =~ ^[a-z][a-z0-9-]*$ ]]
+_azt_valid_alias() {
+  [[ $1 =~ ^[[:alnum:]][[:alnum:]_-]*$ ]]
 }
 
 _azt_valid_tenant_id() {
-    [[ "$1" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$ ]]
+  [[ $1 =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]
 }
 
-azure_tenant_switcher_add_tenant() {
-    local slug label tenant_id existing_slug
-
-    if [ "$#" -ne 3 ]; then
-        printf '%s\n' 'Expected: azure_tenant_switcher_add_tenant <slug> <label> <tenant-id>' >&2
-        return 1
-    fi
-
-    slug=$1
-    label=$2
-    tenant_id=$3
-
-    if ! _azt_valid_slug "$slug"; then
-        printf 'Invalid tenant slug: %s\n' "$slug" >&2
-        return 1
-    fi
-
-    if [ -z "$label" ]; then
-        printf 'Tenant label cannot be empty: %s\n' "$slug" >&2
-        return 1
-    fi
-
-    if ! _azt_valid_tenant_id "$tenant_id"; then
-        printf 'Invalid tenant ID for %s\n' "$slug" >&2
-        return 1
-    fi
-
-    if [ "${#AZURE_TENANT_SWITCHER_SLUGS[@]}" -gt 0 ]; then
-        for existing_slug in "${AZURE_TENANT_SWITCHER_SLUGS[@]}"; do
-            if [ "$existing_slug" = "$slug" ]; then
-                printf 'Duplicate tenant slug: %s\n' "$slug" >&2
-                return 1
-            fi
-        done
-    fi
-
-    AZURE_TENANT_SWITCHER_SLUGS[${#AZURE_TENANT_SWITCHER_SLUGS[@]}]=$slug
-    AZURE_TENANT_SWITCHER_LABELS[${#AZURE_TENANT_SWITCHER_LABELS[@]}]=$label
-    AZURE_TENANT_SWITCHER_IDS[${#AZURE_TENANT_SWITCHER_IDS[@]}]=$tenant_id
+_azt_valid_label() {
+  [[ -n $1 && $1 =~ ^[[:print:]]+$ ]]
 }
 
-_azt_load_config() {
-    local config_path
+_azt_find_tenant() {
+  local requested_alias=$1
+  local alias='' tenant_id='' label='' extra=''
+  local seen_aliases='' selected=0
 
-    config_path=$(_azt_config_path)
-    if [ ! -r "$config_path" ]; then
-        printf 'Tenant configuration not found: %s\n' "$config_path" >&2
-        return 1
+  AZT_ALIAS=
+  AZT_TENANT_ID=
+  AZT_LABEL=
+
+  if ! _azt_valid_alias "$requested_alias"; then
+    _azt_error "invalid tenant alias: $requested_alias"
+    return 1
+  fi
+
+  if [[ ! -r $AZURE_TENANT_SWITCHER_CONFIG ]]; then
+    _azt_error "configuration is not readable: $AZURE_TENANT_SWITCHER_CONFIG"
+    return 1
+  fi
+
+  while IFS='|' read -r alias tenant_id label extra || [[ -n $alias$tenant_id$label$extra ]]; do
+    label=${label%$'\r'}
+    [[ -z $alias || $alias == \#* ]] && continue
+
+    if [[ -n $extra ]] || ! _azt_valid_alias "$alias" || ! _azt_valid_tenant_id "$tenant_id" || ! _azt_valid_label "$label"; then
+      _azt_error "invalid configuration entry for alias: $alias"
+      return 1
     fi
 
-    AZURE_TENANT_SWITCHER_SLUGS=()
-    AZURE_TENANT_SWITCHER_LABELS=()
-    AZURE_TENANT_SWITCHER_IDS=()
-    unset -f azure_tenant_switcher_config 2>/dev/null || true
-
-    # The user-owned file defines data through azure_tenant_switcher_add_tenant.
-    source "$config_path" || return 1
-
-    if ! declare -f azure_tenant_switcher_config >/dev/null 2>&1; then
-        printf 'Tenant configuration must define azure_tenant_switcher_config().\n' >&2
+    case " $seen_aliases " in
+      *" $alias "*)
+        _azt_error "duplicate configuration entry for alias: $alias"
         return 1
+        ;;
+    esac
+    seen_aliases="$seen_aliases $alias"
+
+    if [[ $alias == "$requested_alias" ]]; then
+      AZT_ALIAS=$alias
+      AZT_TENANT_ID=$tenant_id
+      AZT_LABEL=$label
+      selected=1
+    fi
+  done < "$AZURE_TENANT_SWITCHER_CONFIG"
+
+  if [[ $selected -eq 1 ]]; then
+    return 0
+  fi
+
+  _azt_error "unknown tenant alias: $requested_alias"
+  return 1
+}
+
+_azt_list_tenants() {
+  local alias='' tenant_id='' label='' extra=''
+  local seen_aliases='' entries=''
+
+  if [[ ! -r $AZURE_TENANT_SWITCHER_CONFIG ]]; then
+    _azt_error "configuration is not readable: $AZURE_TENANT_SWITCHER_CONFIG"
+    return 1
+  fi
+
+  while IFS='|' read -r alias tenant_id label extra || [[ -n $alias$tenant_id$label$extra ]]; do
+    label=${label%$'\r'}
+    [[ -z $alias || $alias == \#* ]] && continue
+
+    if [[ -n $extra ]] || ! _azt_valid_alias "$alias" || ! _azt_valid_tenant_id "$tenant_id" || ! _azt_valid_label "$label"; then
+      _azt_error "invalid configuration entry for alias: $alias"
+      return 1
     fi
 
-    azure_tenant_switcher_config || return 1
-
-    if [ "${#AZURE_TENANT_SWITCHER_SLUGS[@]}" -eq 0 ]; then
-        printf 'Tenant configuration did not define any tenants.\n' >&2
+    case " $seen_aliases " in
+      *" $alias "*)
+        _azt_error "duplicate configuration entry for alias: $alias"
         return 1
+        ;;
+    esac
+    seen_aliases="$seen_aliases $alias"
+    entries+="$alias"$'\t'"$label"$'\n'
+  done < "$AZURE_TENANT_SWITCHER_CONFIG"
+
+  printf '%s' "$entries"
+}
+
+_azt_completion_aliases() {
+  local alias='' tenant_id='' label='' extra=''
+
+  [[ -r $AZURE_TENANT_SWITCHER_CONFIG ]] || return 0
+
+  while IFS='|' read -r alias tenant_id label extra || [[ -n $alias$tenant_id$label$extra ]]; do
+    label=${label%$'\r'}
+    [[ -z $alias || $alias == \#* ]] && continue
+
+    if [[ -z $extra ]] && _azt_valid_alias "$alias" && _azt_valid_tenant_id "$tenant_id" && _azt_valid_label "$label"; then
+      printf '%s\n' "$alias"
     fi
+  done < "$AZURE_TENANT_SWITCHER_CONFIG"
+}
+
+_azt_usage() {
+  cat <<'EOF'
+Usage:
+  azt <alias>       Select an Azure CLI context for an alias.
+  azt --list         List configured aliases and labels.
+  azt current        Show the selected tenant context.
+  azt --help         Show this help.
+
+Run azlogin after selecting a tenant to start a device-code sign-in.
+EOF
 }
 
 azt() {
-    local slug config_root index
+  local context_directory
 
-    if [ "$#" -ne 1 ]; then
-        printf '%s\n' 'Usage: azt <tenant-slug>' >&2
-        return 2
-    fi
+  case ${1:-} in
+    --help|-h)
+      _azt_usage
+      return 0
+      ;;
+    --list|-l)
+      [[ $# -eq 1 ]] || {
+        _azt_usage >&2
+        return 1
+      }
+      _azt_list_tenants
+      return
+      ;;
+    current)
+      [[ $# -eq 1 ]] || {
+        _azt_usage >&2
+        return 1
+      }
+      if [[ -z ${AZ_TENANT:-} || -z ${AZ_TENANT_LABEL:-} ]]; then
+        _azt_error "no tenant context is selected"
+        return 1
+      fi
+      printf 'Selected Azure tenant: %s\n' "$AZ_TENANT_LABEL"
+      return 0
+      ;;
+    ''|--*)
+      _azt_usage >&2
+      return 1
+      ;;
+  esac
 
-    slug=$1
-    _azt_load_config || return 1
-
-    index=0
-    while [ "$index" -lt "${#AZURE_TENANT_SWITCHER_SLUGS[@]}" ]; do
-        if [ "${AZURE_TENANT_SWITCHER_SLUGS[$index]}" = "$slug" ]; then
-            config_root=${AZURE_TENANT_SWITCHER_CONFIG_ROOT:-"$HOME/.azure-tenants"}
-            AZURE_CONFIG_DIR="$config_root/$slug"
-            AZ_TENANT_LABEL=${AZURE_TENANT_SWITCHER_LABELS[$index]}
-            AZ_TENANT=${AZURE_TENANT_SWITCHER_IDS[$index]}
-            AZURE_TENANT_SWITCHER_ACTIVE_SLUG=$slug
-            export AZURE_CONFIG_DIR AZ_TENANT_LABEL AZ_TENANT AZURE_TENANT_SWITCHER_ACTIVE_SLUG
-            printf 'Selected Azure tenant: %s\n' "$AZ_TENANT_LABEL"
-            return 0
-        fi
-        index=$((index + 1))
-    done
-
-    printf 'Unknown tenant slug: %s\n' "$slug" >&2
+  if [[ $# -ne 1 ]]; then
+    _azt_usage >&2
     return 1
-}
+  fi
 
-azt_list() {
-    local index
+  _azt_find_tenant "$1" || return 1
+  context_directory=$AZURE_TENANT_SWITCHER_CONFIG_ROOT/$AZT_ALIAS
 
-    _azt_load_config || return 1
-    index=0
-    while [ "$index" -lt "${#AZURE_TENANT_SWITCHER_SLUGS[@]}" ]; do
-        printf '%s\t%s\n' "${AZURE_TENANT_SWITCHER_SLUGS[$index]}" "${AZURE_TENANT_SWITCHER_LABELS[$index]}"
-        index=$((index + 1))
-    done
-}
+  if [[ ! -d $context_directory ]]; then
+    (umask 077 && mkdir -p "$context_directory") || {
+      _azt_error "unable to create Azure CLI context directory: $context_directory"
+      return 1
+    }
+  fi
 
-azt_completion() {
-    _azt_load_config || return 1
-    printf '%s\n' "${AZURE_TENANT_SWITCHER_SLUGS[@]}"
-}
-
-_azt_complete() {
-    local current_word
-
-    current_word=${COMP_WORDS[COMP_CWORD]}
-    COMPREPLY=($(compgen -W "$(azt_completion)" -- "$current_word"))
+  export AZURE_CONFIG_DIR=$context_directory
+  export AZ_TENANT=$AZT_TENANT_ID
+  export AZ_TENANT_LABEL=$AZT_LABEL
+  printf 'Selected Azure tenant: %s\n' "$AZ_TENANT_LABEL"
 }
 
 azlogin() {
-    if [ -z "${AZ_TENANT:-}" ]; then
-        printf '%s\n' 'No Azure tenant is selected. Run: azt <tenant-slug>' >&2
-        return 1
-    fi
+  if [[ -z ${AZ_TENANT:-} || -z ${AZ_TENANT_LABEL:-} ]]; then
+    _azt_error "select a tenant first: azt <alias>"
+    return 1
+  fi
 
-    if ! command -v az >/dev/null 2>&1; then
-        printf '%s\n' 'Azure CLI (az) is not available on PATH.' >&2
-        return 127
-    fi
+  if ! command -v az >/dev/null 2>&1; then
+    _azt_error "Azure CLI (az) is not installed or not on PATH"
+    return 1
+  fi
 
-    command az login --tenant "$AZ_TENANT" --use-device-code --allow-no-subscriptions "$@"
+  command az login --tenant "$AZ_TENANT" --use-device-code --allow-no-subscriptions
 }
 
 azt_status() {
-    if [ -z "${AZ_TENANT:-}" ] || [ -z "${AZ_TENANT_LABEL:-}" ]; then
-        printf '%s\n' 'No Azure tenant is selected.'
-        return 1
-    fi
+  if [[ -z ${AZ_TENANT:-} || -z ${AZ_TENANT_LABEL:-} ]]; then
+    _azt_error "no tenant context is selected"
+    return 1
+  fi
 
-    if ! command -v az >/dev/null 2>&1; then
-        printf 'Selected, Azure CLI unavailable: %s\n' "$AZ_TENANT_LABEL"
-        return 1
-    fi
+  if ! command -v az >/dev/null 2>&1; then
+    _azt_error "Azure CLI (az) is not installed or not on PATH"
+    return 1
+  fi
 
-    if command az account get-access-token --tenant "$AZ_TENANT" --resource https://management.azure.com/ --only-show-errors >/dev/null 2>&1; then
-        printf 'Signed in (cached): %s\n' "$AZ_TENANT_LABEL"
-    else
-        printf 'Not signed in: %s\n' "$AZ_TENANT_LABEL"
-        return 1
-    fi
+  if command az account get-access-token --tenant "$AZ_TENANT" --resource https://management.azure.com/ --only-show-errors >/dev/null 2>&1; then
+    printf 'Azure CLI session is active for %s.\n' "$AZ_TENANT_LABEL"
+    return 0
+  fi
+
+  printf 'No active Azure CLI session for %s. Run azlogin.\n' "$AZ_TENANT_LABEL" >&2
+  return 1
 }
 
 azt_prompt_tag() {
-    if [ -n "${AZ_TENANT_LABEL:-}" ]; then
-        printf '[az:%s]' "$AZ_TENANT_LABEL"
-    fi
+  [[ -n ${AZ_TENANT_LABEL:-} ]] && printf ' [az:%s]' "$AZ_TENANT_LABEL"
 }
 
-azt_help() {
-    printf '%s\n' \
-        'azt <tenant-slug>  Select a tenant-specific Azure CLI configuration directory.' \
-        'azt_list            List configured tenant slugs and labels.' \
-        'azlogin [az args]   Sign in to the selected tenant with device code.' \
-        'azt_status          Report whether the selected tenant has a usable cached token.' \
-        'azt_prompt_tag      Print a compact label for use in a Bash prompt.'
+_azt_complete() {
+  local current aliases
+
+  current=${COMP_WORDS[COMP_CWORD]}
+  aliases=$(_azt_completion_aliases)
+  COMPREPLY=($(compgen -W "$aliases" -- "$current"))
 }
 
-if [[ $- == *i* ]]; then
-    complete -F _azt_complete azt
+if type complete >/dev/null 2>&1; then
+  complete -F _azt_complete azt
 fi

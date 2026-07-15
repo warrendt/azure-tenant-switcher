@@ -1,115 +1,123 @@
 # Azure Tenant Switcher
 
-A small, sourceable Bash utility for keeping Azure CLI sign-in state isolated by
-tenant. It selects a dedicated `AZURE_CONFIG_DIR` for each short alias, exposes
-the selected tenant through `AZ_TENANT` and `AZ_TENANT_LABEL`, and provides a
-device-code login command.
+Azure Tenant Switcher is a small, sourceable Bash helper for keeping separate
+Azure CLI contexts for multiple Entra tenants. It requires Bash 3.2 or later
+and the Azure CLI (`az`) only when you sign in or check session status.
 
-This repository intentionally contains only fictitious examples. The Contoso,
-Fabrikam, and Northwind labels and IDs are placeholders.
-
-## Requirements
-
-- Bash 3.2 or later (the Bash version included with macOS is supported)
-- Azure CLI (`az`) available on `PATH` for sign-in and status commands
-
-No package manager, external shell framework, or daemon is required.
+Tenant mappings are a plain local file, not shell code. The repository contains
+only fictitious Contoso, Fabrikam, and Northwind examples.
 
 ## Install
 
-Clone the repository and source the tool from your Bash startup file:
+1. Copy or clone this repository to a directory you control.
+2. Create a private local configuration directory and copy the template:
+
+   ```bash
+   config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/azure-tenant-switcher"
+   mkdir -p "$config_dir"
+   chmod 700 "$config_dir"
+   cp tenants.conf.example "$config_dir/tenants.conf"
+   chmod 600 "$config_dir/tenants.conf"
+   ```
+
+3. Edit `"$config_dir/tenants.conf"` and replace the sample UUIDs with the
+   tenant IDs you are authorized to use.
+4. Source the helper from your interactive Bash startup file:
+
+   ```bash
+   source "/path/to/azure-tenant-switcher/azure-tenant-switcher.bash"
+   ```
+
+For a different configuration file or context root, set these variables before
+sourcing the helper:
 
 ```bash
+export AZURE_TENANT_SWITCHER_CONFIG="$HOME/.config/azure-tenant-switcher/tenants.conf"
+export AZURE_TENANT_SWITCHER_CONFIG_ROOT="$HOME/.azure-tenants"
 source "/path/to/azure-tenant-switcher/azure-tenant-switcher.bash"
 ```
 
-Create a private, user-local configuration file:
+## Configure tenants
 
-```bash
-install -d -m 700 "$HOME/.config/azure-tenant-switcher"
-cp "/path/to/azure-tenant-switcher/config/tenants.example.bash" \
-  "$HOME/.config/azure-tenant-switcher/tenants.bash"
-chmod 600 "$HOME/.config/azure-tenant-switcher/tenants.bash"
+Each non-comment line uses this exact format:
+
+```text
+alias|tenant-id|display label
 ```
 
-Edit the copied file to replace the fictitious tenant IDs and labels. Keep it
-outside the repository; the default file is intentionally ignored by Git.
+Aliases must begin with a letter or number and may contain letters, numbers,
+underscores, and hyphens. Tenant IDs must be UUIDs. Labels must be non-empty,
+printable text. Invalid entries fail closed: selecting or listing tenants stops
+with an error rather than using a partial mapping.
 
-To use a different location, set `AZURE_TENANT_SWITCHER_CONFIG` before sourcing
-the tool. To store isolated Azure CLI directories somewhere other than
-`$HOME/.azure-tenants`, set `AZURE_TENANT_SWITCHER_CONFIG_ROOT`.
-
-## Usage
+## Use
 
 ```bash
-azt contoso       # Select a configured context for this shell.
-azlogin            # Run az login with device code for the selected tenant.
-azt_status         # Check whether Azure CLI can use a cached access token.
-azt_list           # Print configured aliases and display labels.
-azt_prompt_tag     # Print [az:Contoso Engineering] for use in PS1.
+azt --list
+azt contoso
+azlogin
+azt_status
 ```
 
-`azt` exports the selected `AZURE_CONFIG_DIR`, `AZ_TENANT`, and
-`AZ_TENANT_LABEL` only to the current shell and its child processes. Switching
-aliases changes where Azure CLI writes its local state; it does not copy,
-export, or synchronize that state.
+`azt <alias>` exports these variables in the current shell:
 
-For a Bash prompt tag, add command substitution to `PS1`, for example:
+| Variable | Purpose |
+| --- | --- |
+| `AZURE_CONFIG_DIR` | Alias-specific Azure CLI directory, defaulting to `~/.azure-tenants/<alias>` |
+| `AZ_TENANT` | Selected tenant UUID, passed to `az login` |
+| `AZ_TENANT_LABEL` | Selected display label |
+
+`azlogin` runs:
 
 ```bash
-PS1='$(azt_prompt_tag) \u:\W\$ '
+az login --tenant "$AZ_TENANT" --use-device-code --allow-no-subscriptions
 ```
 
-The command is empty until a tenant is selected.
+`azt_status` checks whether the selected context has an active Azure CLI
+session without printing account, subscription, or sign-in details.
+
+For an optional prompt component, add `$(azt_prompt_tag)` where appropriate in
+your Bash prompt configuration. The function is empty until a tenant is
+selected.
+
+Tab completion is registered for `azt` aliases when the file is sourced.
 
 ## iTerm2 dynamic profiles
 
-`examples/iterm2-dynamic-profiles.json` supplies three sanitized profiles. Copy
-it to iTerm2's DynamicProfiles directory, then open a profile after this tool
-has been sourced by the shell startup file. Each profile only sets a display
-name, badge, and initial `azt <alias>` command; it contains no tenant IDs,
-account names, tokens, or subscriptions.
+`examples/iterm2-dynamic-profiles.json` provides sanitized profiles for the
+sample aliases. Replace the display labels and generate unique profile GUIDs
+before use. Copy the resulting JSON file to:
 
-## Security and reset guidance
-
-Tenant IDs and labels identify directory contexts but are not authentication
-credentials. Treat the local mapping as private operational configuration:
-
-- Do not commit your copied `tenants.bash` file.
-- Do not place access tokens, account names, client secrets, certificates, or
-  subscription details in the mapping.
-- Each selected context may contain Azure CLI tokens under
-  `$AZURE_CONFIG_DIR`; those files are created and managed only by Azure CLI.
-- Use a restrictive configuration-file mode such as `0600`.
-
-To sign out from one selected context, run:
-
-```bash
-az logout
+```text
+~/Library/Application Support/iTerm2/DynamicProfiles/
 ```
 
-To discard all cached Azure CLI state for one context after signing out, remove
-only that context directory after confirming its path:
+iTerm2 reloads valid dynamic-profile files as they change. The sample profiles
+contain only a name, badge, and `Initial Text` command such as `azt contoso`;
+they do not contain tenant IDs or credentials.
 
-```bash
-rm -rf "$AZURE_CONFIG_DIR"
-```
+## Security and reset
 
-To reset all tenant contexts, remove the configured context root only after
-verifying it is the intended directory:
-
-```bash
-rm -rf "$HOME/.azure-tenants"
-```
-
-Deleting a context removes local Azure CLI state; it does not change resources
-or identities in Azure.
+- Never commit your local `tenants.conf`; `.gitignore` excludes common local
+  mapping locations and Azure CLI cache directories.
+- This tool does not write login tokens. Azure CLI writes its own cached
+  authentication data under the selected `AZURE_CONFIG_DIR`.
+- Use a separate config root if you want to isolate this tool further:
+  `AZURE_TENANT_SWITCHER_CONFIG_ROOT=/secure/location`.
+- To clear one alias-specific Azure CLI session, sign out in that selected
+  context with `az logout`, then remove only that alias directory under the
+  configured context root. To reset every context managed by this tool, remove
+  the configured context root after signing out.
+- Removing the local mapping file prevents future selection but does not delete
+  Azure CLI cache directories. Remove those separately if required.
 
 ## Test
+
+Run the portable shell test suite:
 
 ```bash
 make test
 ```
 
-The test script uses Bash and standard shell utilities only. It creates
-temporary mock Azure CLI state and never contacts Azure.
+The tests use a temporary directory and a stub `az` executable. They do not
+contact Azure or create persistent credential data.

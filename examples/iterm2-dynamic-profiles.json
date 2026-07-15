@@ -1,17 +1,20 @@
 {
   "Profiles": [
     {
-      "Name": "Contoso Engineering",
+      "Name": "Azure - Contoso Engineering",
+      "Guid": "a0a0a0a0-1111-4222-8333-444444444444",
       "Badge Text": "Contoso Engineering",
       "Initial Text": "azt contoso\n"
     },
     {
-      "Name": "Fabrikam Research",
+      "Name": "Azure - Fabrikam Research",
+      "Guid": "b0b0b0b0-2222-4333-8444-555555555555",
       "Badge Text": "Fabrikam Research",
       "Initial Text": "azt fabrikam\n"
     },
     {
-      "Name": "Northwind Retail",
+      "Name": "Azure - Northwind Retail",
+      "Guid": "c0c0c0c0-3333-4444-8555-666666666666",
       "Badge Text": "Northwind Retail",
       "Initial Text": "azt northwind\n"
     }
