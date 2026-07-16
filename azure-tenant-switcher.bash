@@ -172,6 +172,8 @@ azt() {
     return 1
   fi
 
+  unset AZURE_CONFIG_DIR AZ_TENANT AZ_TENANT_LABEL
+
   _azt_find_tenant "$1" || return 1
   context_directory=$AZURE_TENANT_SWITCHER_CONFIG_ROOT/$AZT_ALIAS
 
